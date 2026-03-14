@@ -5,13 +5,19 @@ from typing import Optional, List
 app = FastAPI()
 
 products = [
-    {"id": 1, "name": "Wireless Mouse", "price": 599, "category": "Electronics", "in_stock": True},
-    {"id": 2, "name": "Notebook", "price": 356, "category": "Stationery", "in_stock": True},
-    {"id": 3, "name": "USB HUB", "price": 649, "category": "Stationery", "in_stock": True},
-    {"id": 4, "name": "pen set", "price": 199, "category": "Electronics", "in_stock": False}
+    {"id": 1, "name": "Wireless Mouse", "price": 499, "category": "Electronics", "in_stock": True},
+    {"id": 2, "name": "Notebook", "price":356, "category": "Stationery", "in_stock": True},
+    {"id": 3, "name": "USB HUB", "price": 649, "category": "Electronics", "in_stock": False},
+    {"id": 4, "name": "pen set", "price": 199, "category": "stationery", "in_stock": False}
 ]
 
 feedback_list = []
+
+# CART + ORDER STORAGE
+cart = []
+orders = []
+order_counter = 1
+
 
 class Feedback(BaseModel):
     customer_name: str
@@ -19,20 +25,28 @@ class Feedback(BaseModel):
     rating: int
     comment: Optional[str] = None
 
+
 class Product(BaseModel):
     name: str
     price: int
     category: str
     in_stock: bool
 
+
 class OrderItem(BaseModel):
     product_id: int = Field(..., gt=0)
     quantity: int = Field(..., ge=1, le=50)
+
 
 class BulkOrder(BaseModel):
     company_name: str = Field(..., min_length=2)
     contact_email: str = Field(..., min_length=5)
     items: List[OrderItem]
+
+
+class CartItem(BaseModel):
+    product_id: int
+    quantity: int
 
 
 @app.get("/")
@@ -250,50 +264,121 @@ def apply_discount(category: str, discount_percent: int):
         "updated_products": updated_products
     }
 
-@app.post("/orders/bulk")
-def bulk_order(order: BulkOrder):
 
-    confirmed = []
-    failed = []
+# CART FEATURES
+
+@app.post("/cart/add")
+def add_to_cart(item: CartItem):
+
+    product = None
+
+    for p in products:
+        if p["id"] == item.product_id:
+            product = p
+            break
+
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    if not product["in_stock"]:
+        raise HTTPException(status_code=400, detail="Product out of stock")
+
+    for c in cart:
+        if c["product_id"] == item.product_id:
+            c["quantity"] += item.quantity
+            return {"message": "Cart updated", "cart": cart}
+
+    cart.append({
+        "product_id": item.product_id,
+        "quantity": item.quantity
+    })
+
+    return {"message": "Added to cart", "cart": cart}
+
+
+@app.get("/cart")
+def view_cart():
+
+    item_count = 0
     grand_total = 0
+    items = []
 
-    for item in order.items:
-
-        product = None
+    for c in cart:
 
         for p in products:
-            if p["id"] == item.product_id:
-                product = p
-                break
+            if p["id"] == c["product_id"]:
 
-        if product is None:
+                subtotal = p["price"] * c["quantity"]
 
-            failed.append({
-                "product_id": item.product_id,
-                "reason": "Product not found"
-            })
+                item_count += c["quantity"]
+                grand_total += subtotal
 
-        elif not product["in_stock"]:
-
-            failed.append({
-                "product_id": item.product_id,
-                "reason": f"{product['name']} is out of stock"
-            })
-
-        else:
-
-            subtotal = product["price"] * item.quantity
-            grand_total += subtotal
-
-            confirmed.append({
-                "product": product["name"],
-                "qty": item.quantity,
-                "subtotal": subtotal
-            })
+                items.append({
+                    "product": p["name"],
+                    "qty": c["quantity"],
+                    "subtotal": subtotal
+                })
 
     return {
-        "company": order.company_name,
-        "confirmed": confirmed,
-        "failed": failed,
+        "items": items,
+        "item_count": item_count,
         "grand_total": grand_total
     }
+
+
+@app.delete("/cart/remove/{product_id}")
+def remove_from_cart(product_id: int):
+
+    for c in cart:
+        if c["product_id"] == product_id:
+            cart.remove(c)
+            return {"message": "Item removed"}
+
+    raise HTTPException(status_code=404, detail="Item not found in cart")
+
+
+@app.post("/cart/checkout")
+def checkout():
+
+    global order_counter
+
+    if len(cart) == 0:
+        raise HTTPException(status_code=400, detail="CART_EMPTY")
+
+    items = []
+    grand_total = 0
+
+    for c in cart:
+
+        for p in products:
+            if p["id"] == c["product_id"]:
+
+                subtotal = p["price"] * c["quantity"]
+                grand_total += subtotal
+
+                items.append({
+                    "product": p["name"],
+                    "qty": c["quantity"],
+                    "subtotal": subtotal
+                })
+
+    order = {
+        "order_id": order_counter,
+        "items": items,
+        "grand_total": grand_total
+    }
+
+    orders.append(order)
+    order_counter += 1
+    cart.clear()
+
+    return {"message": "Order placed", "order": order}
+
+
+@app.get("/orders")
+def get_orders():
+
+    if len(orders) == 0:
+        return {"message": "no new order added"}
+
+    return {"orders": orders}
